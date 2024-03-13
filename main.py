@@ -3,15 +3,28 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import os
 from dotenv import load_dotenv
 import random
+import re
 
 load_dotenv()
+
+def validate_spotify_playlist_url(url):
+    """
+    Validate the Spotify playlist URL format.
+    Returns True if the URL is valid, False otherwise.
+    """
+    # Regular expression pattern to match a Spotify playlist URL
+    SPOTIFY_PLAYLIST_REGEX = r'^https://open\.spotify\.com/playlist/[a-zA-Z0-9_-]+\?si=[a-zA-Z0-9_-]+$'
+    """
+    Validate the Spotify playlist URL format.
+    Returns True if the URL is valid, False otherwise.
+    """
+    return bool(re.match(SPOTIFY_PLAYLIST_REGEX, url))
 
 def authenticate_spotify():
     """
     Authenticate with the Spotify API using client credentials obtained from environment variables.
     Returns a Spotify client object.
     """
-    print('Authenticating Spotify API...')
     client_id = os.getenv("CLIENT_ID")
     client_secret = os.getenv("CLIENT_SECRET")
 
@@ -24,9 +37,10 @@ def fetch_playlist_tracks(playlist_url):
     Fetch detailed information about tracks in a Spotify playlist using the provided URL.
     Returns a list of dictionaries, each containing track information.
     """
-    print('Fetching playlist information...')
     sp = authenticate_spotify()
     playlist_id = playlist_url.split('?')[0].split('/')[-1]  # Split using '?' and extract first part
+    playlist = sp.playlist(playlist_id)
+    print('\n------------ Playlist Name:', playlist['name'])
     track_info = []
 
     results = sp.playlist_tracks(playlist_id)
@@ -39,6 +53,7 @@ def fetch_playlist_tracks(playlist_url):
             'artists': [artist['name'] for artist in track['artists']],
             'popularity': track['popularity'],
             'release_year': release_year,
+            'album': track['album']['name'],
             # Add more attributes as needed (e.g., genres)
         })
 
@@ -91,40 +106,20 @@ def calculate_track_ratings(track_info):
 
     return track_info
 
-def display_track_ratings(track_info):
+def display_playlist_tracks(track_info):
     """
-    Display ratings for each track.
+    Display information for each track.
     """
+    print(f"\n({len(track_info)} tracks) ")
     for i, track in enumerate(track_info, 1):
-        print(f"Track {i}:")
-        print("Name:", track['name'])
-        print("Artists:", ", ".join(track['artists']))
-        print("Artist Rating:", track['artist_rating'])
-        print("Genres Rating:", track['genres_rating'])
-        print("Popularity Rating:", track['popularity_rating'])
-        print("Length Rating:", track['length_rating'])
-        print("Overall Rating:", track['overall_rating'])
-        print()
-
-def calculate_overall_rating(track_info):
-    """
-    Calculate the overall rating of the playlist based on the ratings of individual tracks.
-    Returns the overall rating.
-    """
-    total_tracks = len(track_info)
-    overall_rating = 0
-
-    for track in track_info:
-        overall_rating += track['overall_rating']
-
-    overall_rating /= total_tracks
-    return overall_rating
+        print(f"{i}. '{track['name']}' - {', '.join(track['artists'])} ({track['album']})")
 
 def generate_recommendations(track_info, sp, num_recommendations=10, num_artists_sample=10):
     """
     Generate recommendations for additional tracks to enhance the playlist.
     Returns a list of recommended track dictionaries.
     """
+    print('Generating recommendations...')
     recommendations = []
 
     # Collect a random sample of artists from existing tracks
@@ -195,18 +190,87 @@ def generate_recommendations(track_info, sp, num_recommendations=10, num_artists
 
     return recommendations[:num_recommendations]
 
+def calculate_playlist_ratings(track_info):
+    """
+    Calculate ratings for the entire playlist based on artist diversity, popularity, genre cohesion, and playlist length.
+    Returns the overall rating for the playlist.
+    """
+    print('Calculating playlist ratings...')
+    ARTIST_WEIGHT = 0.3
+    POPULARITY_WEIGHT = 0.2
+    GENRE_COHESION_WEIGHT = 0.35
+    LENGTH_WEIGHT = 0.15
+
+    sp = authenticate_spotify()
+
+    # Artist diversity rating
+    unique_artists = set(artist for track in track_info for artist in track['artists'])
+    artist_diversity_rating = len(unique_artists) / len(track_info)
+
+    # Popularity rating
+    popularity_ratings = [track['popularity'] for track in track_info]
+    popularity_rating = sum(popularity_ratings) / len(popularity_ratings) / 100  # Normalize to range between 0 and 1
+
+    # Genre cohesion rating
+    genres_set = set()
+    for artist in unique_artists:
+        genres_set.update(get_artist_genres(artist, sp))
+    genre_cohesion_rating = 1 - (len(genres_set) / len(unique_artists))
+
+    # Playlist length rating
+    playlist_length_rating = min(len(track_info) / 50, 1.0)  # Cap at 1.0 if playlist length exceeds 50 tracks
+
+    # Calculate overall rating
+    overall_rating = (ARTIST_WEIGHT * artist_diversity_rating) + \
+                     (POPULARITY_WEIGHT * popularity_rating) + \
+                     (GENRE_COHESION_WEIGHT * genre_cohesion_rating) + \
+                     (LENGTH_WEIGHT * playlist_length_rating)
+
+    # Normalize overall rating to range between 0 and 1
+    overall_rating = min(max(overall_rating, 0), 1)
+
+    return {
+        'artist_diversity_rating': artist_diversity_rating,
+        'popularity_rating': popularity_rating,
+        'genre_cohesion_rating': genre_cohesion_rating,
+        'playlist_length_rating': playlist_length_rating,
+        'overall_rating': overall_rating
+    }
+
+def display_playlist_ratings(playlist_ratings):
+    """
+    Display ratings for the entire playlist.
+    """
+    print("\nOverall Playlist Ratings:")
+    print("Playlist Artist Diversity Rating: {:.2f}".format(playlist_ratings['artist_diversity_rating']))
+    print("Playlist Popularity Rating: {:.2f}".format(playlist_ratings['popularity_rating']))
+    print("Playlist Genre Cohesion Rating: {:.2f}".format(playlist_ratings['genre_cohesion_rating']))
+    print("Playlist Length Rating: {:.2f}".format(playlist_ratings['playlist_length_rating']))
+    print("\nOverall Playlist Rating: {:.2f}".format(playlist_ratings['overall_rating']))
 
 # Main
 if __name__ == "__main__":
-    playlist_url = 'https://open.spotify.com/playlist/0EWM6YBLBxCW0WIgnB0izA?si=d19d1e0f1f374593'
-    track_info = fetch_playlist_tracks(playlist_url)
-    track_info = calculate_track_ratings(track_info)
-    overall_rating = calculate_overall_rating(track_info)
+    playlist_url = input("Enter the Spotify playlist URL: ")
 
-    print("Overall Playlist Rating:", overall_rating)
+    # Validate the input URL
+    while not validate_spotify_playlist_url(playlist_url):
+        print("Invalid Spotify playlist URL. Please enter a valid URL.")
+        playlist_url = input("Enter the Spotify playlist URL: ")
 
+    print('Authenticating Spotify API...')
     sp = authenticate_spotify()
+    print('Fetching playlist information...')
+    track_info = fetch_playlist_tracks(playlist_url)
+    print('Analysing and calculating playlist score...')
+    overall_playlist_rating = calculate_playlist_ratings(track_info)
+    track_info = calculate_track_ratings(track_info)
+    print()
+
+    display_playlist_tracks(track_info)
+    display_playlist_ratings(overall_playlist_rating)
+
     recommendations = generate_recommendations(track_info, sp)
-    print("\nRecommendations:")
+    print("\nRecommended tracks:")
     for i, track in enumerate(recommendations, 1):
-        print(f"{i}. {track['name']} - {', '.join(track['artists'])} (Popularity: {track['popularity']}, Genre Similarity: {track['genre_similarity']:.2f})")
+        print(f"{i}. '{track['name']}' - {', '.join(track['artists'])} ({track['album']})")
+    print()
