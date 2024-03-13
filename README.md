@@ -17,4 +17,7 @@ The playlist rating is calculated for each track based on the artist diversity, 
 The program also gives extra recommendations of songs based on the user's playlist preferences to help improve the score of their playlist.
 
 ### Console output examples:
-???
+![output-1](screenshots/output-list.png)
+![output-2](screenshots/output-result.png)
+![output-3](screenshots/output-recommend.png)
+

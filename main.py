@@ -1,9 +1,7 @@
-import spotipy
+import spotipy, os, random, re, math
 from spotipy.oauth2 import SpotifyClientCredentials
-import os
 from dotenv import load_dotenv
-import random
-import re
+from collections import Counter
 
 load_dotenv()
 
@@ -54,7 +52,7 @@ def fetch_playlist_tracks(playlist_url):
             'popularity': track['popularity'],
             'release_year': release_year,
             'album': track['album']['name'],
-            # Add more attributes as needed (e.g., genres)
+            # add list of genres found in particular track to be used for calculating genre cohension
         })
 
     return track_info
@@ -65,46 +63,6 @@ def get_artist_genres(artist_name, sp):
         return results['artists']['items'][0]['genres']
     else:
         return []
-
-def calculate_track_ratings(track_info):
-    """
-    Calculate ratings for each track based on artist diversity, popularity, and playlist length.
-    Returns the track_info list with added rating information.
-    """
-    print('Calculating rating based on playlist information...')
-    ARTIST_WEIGHT = 0.2
-    GENRES_WEIGHT = 0.3
-    POPULARITY_WEIGHT = 0.25
-    LENGTH_WEIGHT = 0.25
-
-    sp = authenticate_spotify()
-
-    for track in track_info:
-        artist_rating = 1 / len(set(track['artists']))
-
-        genres_count = 0
-        for artist in track['artists']:
-            genres = get_artist_genres(artist, sp)
-            if genres:
-                genres_count += len(genres)
-        if genres_count:
-            genres_rating = 1 / genres_count
-        else:
-            genres_rating = 0
-
-        popularity_rating = track['popularity'] / 100
-        length_rating = len(track_info) / 50
-
-        overall_rating = (ARTIST_WEIGHT * artist_rating) + (GENRES_WEIGHT * genres_rating) + \
-                         (POPULARITY_WEIGHT * popularity_rating) + (LENGTH_WEIGHT * length_rating)
-
-        track['artist_rating'] = artist_rating
-        track['genres_rating'] = genres_rating
-        track['popularity_rating'] = popularity_rating
-        track['length_rating'] = length_rating
-        track['overall_rating'] = overall_rating
-
-    return track_info
 
 def display_playlist_tracks(track_info):
     """
@@ -122,10 +80,8 @@ def generate_recommendations(track_info, sp, num_recommendations=10, num_artists
     print('Generating recommendations...')
     recommendations = []
 
-    # Collect a random sample of artists from existing tracks
-    existing_artists = [track['artists'] for track in track_info]
-    existing_artists = random.sample(existing_artists, min(len(existing_artists), num_artists_sample))
-    existing_artists = set(artist for sublist in existing_artists for artist in sublist)  # Flatten the list
+    # Collect unique artists from existing tracks
+    existing_artists = {artist for track in track_info for artist in track['artists']}
 
     # Collect genres from existing tracks
     existing_genres = set()
@@ -136,7 +92,7 @@ def generate_recommendations(track_info, sp, num_recommendations=10, num_artists
     # Track albums already included in recommendations
     included_albums = set()
 
-    # Find similar tracks based on shared artists or genres
+    # Iterate over existing artists and find recommendations
     for artist in existing_artists:
         # Search for tracks by the artist
         results = sp.search(q='artist:' + artist, type='track', limit=num_recommendations)
@@ -157,7 +113,7 @@ def generate_recommendations(track_info, sp, num_recommendations=10, num_artists
                 continue
             
             # Filter out tracks already in the playlist
-            if item['name'] in [t['name'] for t in track_info]:
+            if item['name'] in {t['name'] for t in track_info}:
                 continue
 
             # Filter out tracks from albums already included in recommendations
@@ -186,70 +142,139 @@ def generate_recommendations(track_info, sp, num_recommendations=10, num_artists
             included_albums.add(item['album']['name'])
 
     # Sort recommendations by popularity, genre similarity, artist diversity, and album diversity
-    recommendations.sort(key=lambda x: (0.7 * x['popularity'] + 0.3 * x['genre_similarity'] - 0.2 * len(set(x['artists'])) - 0.1 * len(included_albums)), reverse=True)
+    recommendations.sort(key=lambda x: (0.7 * x['popularity'] + 0.3 * x['genre_similarity'] - 0.2 * len(set(x['artists']).intersection(existing_artists)) - 0.1 * len(included_albums)), reverse=True)
 
     return recommendations[:num_recommendations]
 
-def calculate_playlist_ratings(track_info):
+def calculate_playlist_ratings(track_info, genre_mapping):
     """
     Calculate ratings for the entire playlist based on artist diversity, popularity, genre cohesion, and playlist length.
     Returns the overall rating for the playlist.
     """
-    print('Calculating playlist ratings...')
+    # Weights for each rating
     ARTIST_WEIGHT = 0.3
     POPULARITY_WEIGHT = 0.2
-    GENRE_COHESION_WEIGHT = 0.35
-    LENGTH_WEIGHT = 0.15
-
-    sp = authenticate_spotify()
+    GENRE_WEIGHT = 0.25
+    LENGTH_WEIGHT = 0.25
 
     # Artist diversity rating
     unique_artists = set(artist for track in track_info for artist in track['artists'])
-    artist_diversity_rating = len(unique_artists) / len(track_info)
-
-    # Popularity rating
-    popularity_ratings = [track['popularity'] for track in track_info]
-    popularity_rating = sum(popularity_ratings) / len(popularity_ratings) / 100  # Normalize to range between 0 and 1
+    artist_diversity_rating = min(len(unique_artists) / len(track_info), 1.0)  # Normalize to range between 0 and 1
 
     # Genre cohesion rating
-    genres_set = set()
-    for artist in unique_artists:
-        genres_set.update(get_artist_genres(artist, sp))
-    genre_cohesion_rating = 1 - (len(genres_set) / len(unique_artists))
+    genre_cohesion_rating = min(calculate_genre_diversity(track_info, sp, genre_mapping), 1.0)
+
+    # Popularity rating - better playlists have a good mixture of popular and unpopular tracks
+    popularity_ratings = [track['popularity'] for track in track_info]
+    popularity_rating = min(sum(popularity_ratings) / len(popularity_ratings) / 100, 1.0)  # Normalize to range between 0 and 1
 
     # Playlist length rating
     playlist_length_rating = min(len(track_info) / 50, 1.0)  # Cap at 1.0 if playlist length exceeds 50 tracks
 
     # Calculate overall rating
-    overall_rating = (ARTIST_WEIGHT * artist_diversity_rating) + \
+    overall_rating = ((ARTIST_WEIGHT * artist_diversity_rating) + \
                      (POPULARITY_WEIGHT * popularity_rating) + \
-                     (GENRE_COHESION_WEIGHT * genre_cohesion_rating) + \
-                     (LENGTH_WEIGHT * playlist_length_rating)
-
-    # Normalize overall rating to range between 0 and 1
-    overall_rating = min(max(overall_rating, 0), 1)
+                     (GENRE_WEIGHT * genre_cohesion_rating) + \
+                     (LENGTH_WEIGHT * playlist_length_rating))
 
     return {
-        'artist_diversity_rating': artist_diversity_rating,
-        'popularity_rating': popularity_rating,
-        'genre_cohesion_rating': genre_cohesion_rating,
-        'playlist_length_rating': playlist_length_rating,
-        'overall_rating': overall_rating
+        'artist_diversity_rating': artist_diversity_rating * 100,
+        'popularity_rating': popularity_rating * 100,
+        'genre_cohesion_rating': genre_cohesion_rating * 100,
+        'playlist_length_rating': playlist_length_rating * 100,
+        'overall_rating': overall_rating * 100
     }
 
-def display_playlist_ratings(playlist_ratings):
+def calculate_genre_diversity(track_info, sp, genre_mapping):
     """
-    Display ratings for the entire playlist.
+    Calculate the diversity rating for parent genres in the playlist.
+    Returns a diversity score between 0.0 and 1.0.
     """
-    print("\nOverall Playlist Ratings:")
-    print("Playlist Artist Diversity Rating: {:.2f}".format(playlist_ratings['artist_diversity_rating']))
-    print("Playlist Popularity Rating: {:.2f}".format(playlist_ratings['popularity_rating']))
-    print("Playlist Genre Cohesion Rating: {:.2f}".format(playlist_ratings['genre_cohesion_rating']))
-    print("Playlist Length Rating: {:.2f}".format(playlist_ratings['playlist_length_rating']))
-    print("\nOverall Playlist Rating: {:.2f}".format(playlist_ratings['overall_rating']))
+    print('Calculating genre diversity...')
+    
+    all_parent_genres = []
+    total_tracks = len(track_info)
+    
+    # Iterate through each track in the playlist
+    for track in track_info:
+        for artist in track['artists']:
+            artist_genres = get_artist_genres(artist, sp)
+            parent_genres = []
+            # Check if each artist genre or its keywords match any parent genre
+            for genre in artist_genres:
+                for parent_genre, keywords in genre_mapping.items():
+                    if any(keyword in genre for keyword in keywords):
+                        parent_genres.append(parent_genre)
+                        break
+            if not parent_genres:  # If no match found, assign to Miscellaneous
+                parent_genres.append('Miscellaneous')
+            all_parent_genres.extend(parent_genres)
+    
+    # Calculate the frequency of each parent genre
+    parent_genre_counts = Counter(all_parent_genres)
+    
+    # Calculate the entropy
+    entropy = 0.0
+    for count in parent_genre_counts.values():
+        probability = count / total_tracks
+        entropy -= probability * math.log(probability, 2)
+    
+    # Normalize entropy to a score between 0.0 and 1.0
+    max_entropy = math.log(len(parent_genre_counts), 2)
+    
+    # Handle cases where max_entropy is 0
+    diversity_score = 1.0 if max_entropy == 0 else 1.0 - (entropy / max_entropy)
+    
+    return diversity_score
+
+def display_most_popular_genres(track_info, genre_mapping, num_genres=3):
+    """
+    Display the most popular parent genres of the playlist.
+    """
+    all_genres = []
+    for track in track_info:
+        for artist in track['artists']:
+            artist_genres = get_artist_genres(artist, sp)
+            parent_genres = []
+            for genre in artist_genres:
+                for parent_genre, keywords in genre_mapping.items():
+                    if any(keyword in genre for keyword in keywords):
+                        parent_genres.append(parent_genre)
+                        break
+            if not parent_genres:
+                parent_genres.append('Miscellaneous/World')
+            all_genres.extend(parent_genres)
+    
+    genre_counts = Counter(all_genres)
+    total_tracks = len(all_genres)
+    most_common_genres = genre_counts.most_common(num_genres)
+    
+    print("\nPopular Genres:")
+    for genre, count in most_common_genres:
+        percentage = (count / total_tracks) * 100
+        print(f"{genre}: {percentage:.2f}%")
 
 # Main
 if __name__ == "__main__":
+    # Parent genres and their particular key-words
+    genre_mapping = {
+        'Rap/Hip-Hop': ['rap', 'hip hop', 'trap', 'drill', 'hip-hop'],
+        'R&B/Soul': ['r&b', 'soul', 'alternative r&b', 'neo soul'],
+        'Pop': ['pop', 'party'],
+        'Dance/Electronic': ['dance', 'electronic', 'techno', 'dubstep', 'drum and bass', 'garage', 'house', 'amapiano'],
+        'Metal/Rock': ['metal','rock', 'punk', 'metalcore'],
+        'Jazz/Blues': ['jazz', 'blues'],
+        'Country/Folk': ['country', 'folk', 'worship'],
+        'Afrobeats': ['afrobeats', 'reggaeton', 'afroswing', 'afrobeat'],
+        'Latin': ['latin', 'reggaeton', 'samba'],
+        'Carribbean': ['reggae', 'dancehall','soca'],
+        'Gospel': ['christian', 'gospel', 'worship'],
+        'Indie/Alternative': ['alternative', 'indie', 'worship'],
+        'Instrumental/Classical': ['classical','instrumental', 'percussion', 'lo-fi'],
+        'Spoken Word': ['spoken word','spoken', 'word', 'poetry', 'freestyle'],
+        'Miscellaneous/World': []  # For genres not identified in other categories
+    }
+
     playlist_url = input("Enter the Spotify playlist URL: ")
 
     # Validate the input URL
@@ -261,16 +286,19 @@ if __name__ == "__main__":
     sp = authenticate_spotify()
     print('Fetching playlist information...')
     track_info = fetch_playlist_tracks(playlist_url)
-    print('Analysing and calculating playlist score...')
-    overall_playlist_rating = calculate_playlist_ratings(track_info)
-    track_info = calculate_track_ratings(track_info)
+
+    print('Calculating playlist ratings...')
+    overall_playlist_rating = calculate_playlist_ratings(track_info, genre_mapping)
     print()
 
     display_playlist_tracks(track_info)
-    display_playlist_ratings(overall_playlist_rating)
+    display_most_popular_genres(track_info, genre_mapping)
+    print()
+    print('\n------------ Overall Playlist Ratings:')
+    for key, value in overall_playlist_rating.items():
+        print(f"{key.replace('_', ' ').title()}: {value:.2f}")
 
     recommendations = generate_recommendations(track_info, sp)
-    print("\nRecommended tracks:")
+    print("\n------------ Recommended tracks:")
     for i, track in enumerate(recommendations, 1):
         print(f"{i}. '{track['name']}' - {', '.join(track['artists'])} ({track['album']})")
-    print()
