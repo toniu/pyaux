@@ -1,5 +1,5 @@
 # pyaux
-[!logo](screenshots/pyaux-logo.png)
+![logo](screenshots/pyaux-logo.png)
 
 A Python-coded tool that analyses and rates a user’s Spotify playlist (the input is the public Spotify URL). The input of the user's spotify playlist undergoes a process for this calculation of the rating. Using OAuth2, the Spotify API is authenticated using client credentials obtained from environment variables.
 
